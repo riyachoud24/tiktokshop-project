@@ -45,10 +45,9 @@ type Product struct {
 
 func main() {
 	// Initialize Redis client
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379", // Redis server address
-		Password: "",               // No password set
-		DB:       0,                // Use default DB
+	time.Sleep(5 * time.Second)
+	rdb = redis.NewClient(&redis.Options{
+		Addr: "172.18.0.2:6379", // Correct IP address for Redis
 	})
 
 	// Check Redis connection
@@ -64,7 +63,7 @@ func main() {
 	go handleMessages()
 
 	// Initialize database connection
-	db, err := sql.Open("mysql", "TikTok:your_password@tcp(127.0.0.1:3306)/TikTok_Hackathon")
+	db, err := sql.Open("mysql", "TikTok:your_password@tcp(127.0.0.1:3307)/TikTok_Hackathon")
 	if err != nil {
 		log.Fatal("Failed to connect to the database:", err)
 	}
@@ -196,41 +195,65 @@ func searchProducts(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 
 // fetchRecommendedProducts fetches products that match the user's search tags from the TikTok_Shop table
 func fetchRecommendedProducts(db *sql.DB, userTags []string) ([]Product, error) {
-	query := "SELECT id, name, tags, created_at FROM TikTok_Shop WHERE "
+	cacheKey := "recommendations:" + strings.Join(userTags, ",")
+	ctx := context.Background()
 
-	for i, tag := range userTags {
-		if i > 0 {
-			query += " OR "
+	// Try to fetch from Redis cache
+	cachedData, err := rdb.Get(ctx, cacheKey).Result()
+	if err == redis.Nil {
+		// Cache miss, fetch from database
+		query := "SELECT id, name, tags, created_at FROM TikTok_Shop WHERE "
+
+		for i, tag := range userTags {
+			if i > 0 {
+				query += " OR "
+			}
+			query += fmt.Sprintf("tags LIKE '%%%s%%'", tag)
 		}
-		query += fmt.Sprintf("tags LIKE '%%%s%%'", tag)
-	}
 
-	query += " ORDER BY created_at DESC LIMIT 10"
+		query += " ORDER BY created_at DESC LIMIT 10"
 
-	rows, err := db.Query(query)
-	if err != nil {
+		rows, err := db.Query(query)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+
+		var recommendations []Product
+		for rows.Next() {
+			var product Product
+			var createdAtRaw []uint8
+
+			err := rows.Scan(&product.ID, &product.Name, &product.Tags, &createdAtRaw)
+			if err != nil {
+				return nil, err
+			}
+
+			createdAt, err := time.Parse("2006-01-02 15:04:05", string(createdAtRaw))
+			if err != nil {
+				return nil, err
+			}
+			product.CreatedAt = createdAt
+
+			recommendations = append(recommendations, product)
+		}
+
+		// Cache the result
+		jsonData, err := json.Marshal(recommendations)
+		if err == nil {
+			rdb.Set(ctx, cacheKey, jsonData, 10*time.Minute)
+		}
+
+		return recommendations, nil
+	} else if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
+	// Cache hit, return cached data
 	var recommendations []Product
-	for rows.Next() {
-		var product Product
-		var createdAtRaw []uint8 // Raw data from the DB
-
-		err := rows.Scan(&product.ID, &product.Name, &product.Tags, &createdAtRaw)
-		if err != nil {
-			return nil, err
-		}
-
-		// Convert the raw `created_at` data to a `time.Time`
-		createdAt, err := time.Parse("2006-01-02 15:04:05", string(createdAtRaw))
-		if err != nil {
-			return nil, err
-		}
-		product.CreatedAt = createdAt
-
-		recommendations = append(recommendations, product)
+	err = json.Unmarshal([]byte(cachedData), &recommendations)
+	if err != nil {
+		return nil, err
 	}
 	return recommendations, nil
 }

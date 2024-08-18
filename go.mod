@@ -1,6 +1,6 @@
 module tiktokshop_project
 
-go 1.23.0
+go 1.23
 
 require github.com/go-sql-driver/mysql v1.8.1
 
