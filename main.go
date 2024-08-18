@@ -3,10 +3,11 @@ package main
 import (
 	"database/sql"
 	//import mysql driver
-	_ "github.com/go-sql-driver/mysql"
 	"html/template"
 	"log"
 	"net/http"
+
+	_ "github.com/go-sql-driver/mysql"
 )
 
 func main() {
@@ -29,7 +30,7 @@ func homePage(w http.ResponseWriter, r *http.Request) {
 func submitContent(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		// Connect to the MySQL database
-		db, err := sql.Open("mysql", "TikTok:Hackathon@tcp(127.0.0.1:3306)/TikTok_Hackathon")
+		db, err := sql.Open("mysql", "riyachoud24:OpenPass@tcp(127.0.0.1:3306)/tiktok_entry")
 		if err != nil {
 			log.Fatal("Failed to connect to the database:", err)
 		}
