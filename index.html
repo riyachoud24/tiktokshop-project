@@ -3,13 +3,144 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Submit Content</title>
+    <title>Marketplace</title>
 </head>
 <body>
-    <h1>Submit Your Content</h1>
-    <form action="/submit" method="post">
-        <textarea name="content" rows="4" cols="50"></textarea><br>
+    <h1>Marketplace</h1>
+
+    <h2>Search for Products</h2>
+    <input type="text" id="searchQuery" placeholder="Enter product name or tags">
+    <button onclick="searchProducts()">Search</button>
+
+    <h2>Submit a New Product</h2>
+    <form id="productForm">
+        <input type="text" name="name" id="name" placeholder="Product Name"><br><br>
+        <input type="text" name="tags" id="tags" placeholder="Tags (comma-separated)"><br><br>
         <input type="submit" value="Submit">
     </form>
+
+    <h2>Search Results</h2>
+    <div id="searchResults"></div>
+
+    <h2>Recommended Products</h2>
+    <div id="recommendations"></div>
+
+    <h2>Notifications</h2>
+    <div id="notifications"></div>
+
+    <script>
+        let socket;
+
+        function connectWebSocket() {
+            socket = new WebSocket('ws://localhost:8080/ws');
+
+            socket.onopen = function(event) {
+                console.log('WebSocket connection established.');
+            };
+
+            socket.onmessage = function(event) {
+                console.log('Received notification:', event.data);
+                displayNotification(event.data);
+            };
+
+            socket.onerror = function(event) {
+                console.error('WebSocket error:', event);
+            };
+
+            socket.onclose = function(event) {
+                console.log('WebSocket connection closed. Reconnecting in 3 seconds...');
+                setTimeout(connectWebSocket, 3000);  // Reconnect after 3 seconds
+            };
+        }
+
+        function displayNotification(message) {
+            const notificationsDiv = document.getElementById('notifications');
+            const newNotification = document.createElement('p');
+            newNotification.textContent = message;
+            notificationsDiv.appendChild(newNotification);
+        }
+
+        function searchProducts() {
+            const query = document.getElementById('searchQuery').value;
+            fetch(`/search?q=${encodeURIComponent(query)}`)
+                .then(response => response.json())
+                .then(data => {
+                    console.log("Search results:", data); // Log the data to the console
+                    const searchResultsDiv = document.getElementById('searchResults');
+                    searchResultsDiv.innerHTML = ''; // Clear previous results
+
+                    if (!data || data.length === 0) {
+                        searchResultsDiv.innerHTML = '<p>No products found.</p>';
+                        return;
+                    }
+
+                    data.forEach(product => {
+                        const productDiv = document.createElement('div');
+                        productDiv.innerHTML = `
+                            <p><strong>${product.Name}</strong></p>
+                            <p>Tags: ${product.Tags}</p>
+                            <p>Posted: ${new Date(product.CreatedAt).toLocaleString()}</p>
+                        `;
+                        searchResultsDiv.appendChild(productDiv);
+
+                        // Fetch recommendations based on the first product's tags
+                        fetchRecommendations(product.Tags);
+                    });
+                })
+                .catch(error => {
+                    console.error('Error fetching search results:', error);
+                });
+        }
+
+        function fetchRecommendations(tags) {
+            fetch(`/recommendations?tags=${encodeURIComponent(tags)}`)
+                .then(response => response.json())
+                .then(data => {
+                    const recommendationsDiv = document.getElementById('recommendations');
+                    recommendationsDiv.innerHTML = ''; // Clear previous recommendations
+
+                    data.forEach(product => {
+                        const recommendationDiv = document.createElement('div');
+                        recommendationDiv.innerHTML = `
+                            <p><strong>${product.Name}</strong></p>
+                            <p>Tags: ${product.Tags}</p>
+                            <p>Posted: ${new Date(product.CreatedAt).toLocaleString()}</p>
+                        `;
+                        recommendationsDiv.appendChild(recommendationDiv);
+                    });
+                })
+                .catch(error => {
+                    console.error('Error fetching recommendations:', error);
+                });
+        }
+
+        // Asynchronously handle form submission to prevent page reload
+        document.getElementById('productForm').addEventListener('submit', function(event) {
+            event.preventDefault(); // Prevent the form from submitting the traditional way
+
+            const name = document.getElementById('name').value;
+            const tags = document.getElementById('tags').value;
+
+            fetch('/submit', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: new URLSearchParams({ name, tags })
+            })
+            .then(response => response.text())
+            .then(data => {
+                console.log('Product submitted successfully:', data);
+                document.getElementById('name').value = '';
+                document.getElementById('tags').value = '';
+            })
+            .catch(error => {
+                console.error('Error submitting product:', error);
+            });
+        });
+
+        // Establish the WebSocket connection only once
+        connectWebSocket();
+    </script>
 </body>
 </html>
