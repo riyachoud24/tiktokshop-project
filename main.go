@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"strings"
@@ -28,26 +30,24 @@ var upgrader = websocket.Upgrader{
 var clients = make(map[*websocket.Conn]bool) // Connected clients
 var broadcast = make(chan string)            // Broadcast channel
 var mutex = sync.Mutex{}                     // Mutex to protect the clients map
-var rdb *redis.Client
-
-func init() {
-	rdb = redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
-	})
-}
 
 type Product struct {
 	ID        int
 	Name      string
 	Tags      string
+	ImageURL  sql.NullString // Use sql.NullString to handle NULL values
 	CreatedAt time.Time
 }
 
+// Global variable to store search result product IDs
+var searchResultIDs []int
+
 func main() {
 	// Initialize Redis client
-	time.Sleep(5 * time.Second)
-	rdb = redis.NewClient(&redis.Options{
-		Addr: "172.18.0.2:6379", // Correct IP address for Redis
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379", // Redis server address
+		Password: "",               // No password set
+		DB:       0,                // Use default DB
 	})
 
 	// Check Redis connection
@@ -101,14 +101,35 @@ func submitProduct(w http.ResponseWriter, r *http.Request, db *sql.DB, rdb *redi
 		name := r.FormValue("name")
 		tags := r.FormValue("tags")
 
+		// Handle the image upload
+		file, handler, err := r.FormFile("image")
+		if err != nil {
+			log.Println("Error retrieving the file")
+			http.Error(w, "Error retrieving the file", http.StatusInternalServerError)
+			return
+		}
+		defer file.Close()
+
+		// Read the file content into memory
+		fileBytes, err := ioutil.ReadAll(file)
+		if err != nil {
+			log.Println("Error reading the file")
+			http.Error(w, "Error reading the file", http.StatusInternalServerError)
+			return
+		}
+
+		// Encode the image to base64
+		base64Image := base64.StdEncoding.EncodeToString(fileBytes)
+		imageData := fmt.Sprintf("data:%s;base64,%s", handler.Header.Get("Content-Type"), base64Image)
+
 		// Insert the product and tags into the database
-		insertQuery := "INSERT INTO TikTok_Shop (name, tags) VALUES (?, ?)"
-		_, err := db.Exec(insertQuery, name, tags)
+		insertQuery := "INSERT INTO TikTok_Shop (name, tags, image_url) VALUES (?, ?, ?)"
+		_, err = db.Exec(insertQuery, name, tags, imageData)
 		if err != nil {
 			log.Fatal("Failed to insert data into the database:", err)
 		}
 
-		// Publish the product details to the Redis channel "new-products"
+		// Publish the product details to the Redis channel "new-products", excluding the image
 		err = rdb.Publish(context.Background(), "new-products", fmt.Sprintf("Name: %s, Tags: %s", name, tags)).Err()
 		if err != nil {
 			log.Fatalf("Failed to publish product to Redis channel: %v", err)
@@ -129,131 +150,118 @@ func searchProducts(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 		return
 	}
 
-	// Check Redis cache first
-	ctx := context.Background()
-	cachedData, err := rdb.Get(ctx, queryParam).Result()
-	if err == redis.Nil {
-		// Cache miss: Query the database
-		log.Println("Cache miss, querying database...")
+	log.Println("Received search query:", queryParam)
 
-		query := "SELECT id, name, tags, created_at FROM TikTok_Shop WHERE name LIKE ? OR tags LIKE ? ORDER BY created_at DESC"
-		rows, err := db.Query(query, "%"+queryParam+"%", "%"+queryParam+"%")
+	// Query the TikTok_Shop table for matching products
+	query := "SELECT id, name, tags, image_url, created_at FROM TikTok_Shop WHERE name LIKE ? OR tags LIKE ? ORDER BY created_at DESC"
+	rows, err := db.Query(query, "%"+queryParam+"%", "%"+queryParam+"%")
+	if err != nil {
+		log.Printf("Error executing search query: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to execute search query: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var products []Product
+	searchResultIDs = []int{} // Clear previous search results
+	for rows.Next() {
+		var product Product
+		var createdAtRaw []uint8 // Raw data from the DB
+
+		err := rows.Scan(&product.ID, &product.Name, &product.Tags, &product.ImageURL, &createdAtRaw)
 		if err != nil {
-			log.Printf("Error executing search query: %v", err)
-			http.Error(w, fmt.Sprintf("Failed to execute search query: %v", err), http.StatusInternalServerError)
+			log.Printf("Error scanning product data: %v", err)
+			http.Error(w, fmt.Sprintf("Failed to scan product data: %v", err), http.StatusInternalServerError)
 			return
 		}
-		defer rows.Close()
 
-		var products []Product
-		for rows.Next() {
-			var product Product
-			var createdAtRaw []uint8
+		// Convert the raw `created_at` data to a `time.Time`
+		createdAt, err := time.Parse("2006-01-02 15:04:05", string(createdAtRaw))
+		if err != nil {
+			log.Printf("Error parsing created_at date: %v", err)
+			http.Error(w, fmt.Sprintf("Failed to parse created_at date: %v", err), http.StatusInternalServerError)
+			return
+		}
+		product.CreatedAt = createdAt
 
-			err := rows.Scan(&product.ID, &product.Name, &product.Tags, &createdAtRaw)
-			if err != nil {
-				log.Printf("Error scanning product data: %v", err)
-				http.Error(w, fmt.Sprintf("Failed to scan product data: %v", err), http.StatusInternalServerError)
-				return
-			}
-
-			createdAt, err := time.Parse("2006-01-02 15:04:05", string(createdAtRaw))
-			if err != nil {
-				log.Printf("Error parsing created_at date: %v", err)
-				http.Error(w, fmt.Sprintf("Failed to parse created_at date: %v", err), http.StatusInternalServerError)
-				return
-			}
-			product.CreatedAt = createdAt
-
-			products = append(products, product)
+		// Handle the case where the image URL is NULL
+		if product.ImageURL.Valid {
+			product.ImageURL.String = product.ImageURL.String
+		} else {
+			product.ImageURL.String = "" // Handle the NULL case
 		}
 
-		// Cache the result in Redis
-		jsonData, err := json.Marshal(products)
-		if err == nil {
-			rdb.Set(ctx, queryParam, jsonData, 10*time.Minute) // Cache for 10 minutes
-		}
+		products = append(products, product)
+		searchResultIDs = append(searchResultIDs, product.ID)
+	}
 
-		// Return the results to the client
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(products); err != nil {
-			log.Printf("Error encoding products as JSON: %v", err)
-			http.Error(w, fmt.Sprintf("Failed to encode products as JSON: %v", err), http.StatusInternalServerError)
-		}
+	log.Println("Products found:", products)
 
-	} else if err != nil {
-		// Error occurred with Redis
-		log.Printf("Redis error: %v", err)
-		http.Error(w, fmt.Sprintf("Redis error: %v", err), http.StatusInternalServerError)
-	} else {
-		// Cache hit: Return cached data
-		log.Println("Cache hit, returning cached data")
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(cachedData))
+	// Send the search results back to the client
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(products); err != nil {
+		log.Printf("Error encoding products as JSON: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to encode products as JSON: %v", err), http.StatusInternalServerError)
+		return
 	}
 }
 
 // fetchRecommendedProducts fetches products that match the user's search tags from the TikTok_Shop table
 func fetchRecommendedProducts(db *sql.DB, userTags []string) ([]Product, error) {
-	cacheKey := "recommendations:" + strings.Join(userTags, ",")
-	ctx := context.Background()
+	query := "SELECT id, name, tags, image_url, created_at FROM TikTok_Shop WHERE "
 
-	// Try to fetch from Redis cache
-	cachedData, err := rdb.Get(ctx, cacheKey).Result()
-	if err == redis.Nil {
-		// Cache miss, fetch from database
-		query := "SELECT id, name, tags, created_at FROM TikTok_Shop WHERE "
-
-		for i, tag := range userTags {
-			if i > 0 {
-				query += " OR "
-			}
-			query += fmt.Sprintf("tags LIKE '%%%s%%'", tag)
+	for i, tag := range userTags {
+		if i > 0 {
+			query += " OR "
 		}
+		query += fmt.Sprintf("tags LIKE '%%%s%%'", tag)
+	}
 
-		query += " ORDER BY created_at DESC LIMIT 10"
+	// Exclude search results
+	if len(searchResultIDs) > 0 {
+		query += " AND id NOT IN ("
+		for i, id := range searchResultIDs {
+			if i > 0 {
+				query += ", "
+			}
+			query += fmt.Sprintf("%d", id)
+		}
+		query += ")"
+	}
 
-		rows, err := db.Query(query)
+	query += " ORDER BY created_at DESC LIMIT 10"
+
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var recommendations []Product
+	for rows.Next() {
+		var product Product
+		var createdAtRaw []uint8 // Raw data from the DB
+
+		err := rows.Scan(&product.ID, &product.Name, &product.Tags, &product.ImageURL, &createdAtRaw)
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
 
-		var recommendations []Product
-		for rows.Next() {
-			var product Product
-			var createdAtRaw []uint8
+		// Convert the raw `created_at` data to a `time.Time`
+		createdAt, err := time.Parse("2006-01-02 15:04:05", string(createdAtRaw))
+		if err != nil {
+			return nil, err
+		}
+		product.CreatedAt = createdAt
 
-			err := rows.Scan(&product.ID, &product.Name, &product.Tags, &createdAtRaw)
-			if err != nil {
-				return nil, err
-			}
-
-			createdAt, err := time.Parse("2006-01-02 15:04:05", string(createdAtRaw))
-			if err != nil {
-				return nil, err
-			}
-			product.CreatedAt = createdAt
-
-			recommendations = append(recommendations, product)
+		// Handle the case where the image URL is NULL
+		if product.ImageURL.Valid {
+			product.ImageURL.String = product.ImageURL.String
+		} else {
+			product.ImageURL.String = "" // Handle the NULL case
 		}
 
-		// Cache the result
-		jsonData, err := json.Marshal(recommendations)
-		if err == nil {
-			rdb.Set(ctx, cacheKey, jsonData, 10*time.Minute)
-		}
-
-		return recommendations, nil
-	} else if err != nil {
-		return nil, err
-	}
-
-	// Cache hit, return cached data
-	var recommendations []Product
-	err = json.Unmarshal([]byte(cachedData), &recommendations)
-	if err != nil {
-		return nil, err
+		recommendations = append(recommendations, product)
 	}
 	return recommendations, nil
 }
