@@ -2,34 +2,34 @@ TikTok Shop Web Application:
 
 Overview:
 
-This project is a simple marketplace web application where users can submit products, search for products, and receive recommendations based on tags. The application uses a combination of technologies including Go, MySQL, Redis, Docker, and WebSockets to provide real-time notifications and efficient data management.
+    This project is a simple marketplace web application where users can submit products, search for products, and receive recommendations based on tags. The application uses a combination of technologies including Go, MySQL, Redis, Docker, and WebSockets to provide real-time notifications and efficient data management.
 
 Features:
 
-Product Submission: Users can submit new products by providing a name, tags, and an optional image.
+    Product Submission: Users can submit new products by providing a name, tags, and an optional image.
 
-Search Functionality: Users can search for products based on name or tags.
+    Search Functionality: Users can search for products based on name or tags.
 
-Recommendations: The system provides product recommendations based on the tags of the searched products.
+    Recommendations: The system provides product recommendations based on the tags of the searched products.
 
-Real-Time Notifications: Notifications are pushed to connected users in real-time when a new product is submitted.
+    Real-Time Notifications: Notifications are pushed to connected users in real-time when a new product is submitted.
 
-WebSocket Integration: Live updates and notifications using WebSockets.
+    WebSocket Integration: Live updates and notifications using WebSockets.
 
-Docker Integration: The application can be containerized and deployed using Docker.
+    Docker Integration: The application can be containerized and deployed using Docker.
 
 
 Technologies Used:
 
-Go: The primary programming language for the backend.
+    Go: The primary programming language for the backend.
 
-MySQL: Relational database management system used to store product data.
+    MySQL: Relational database management system used to store product data.
 
-Redis: In-memory data structure store used for caching and real-time notifications.
+    Redis: In-memory data structure store used for caching and real-time notifications.
 
-Docker: Used to containerize the application for easy deployment.
+    Docker: Used to containerize the application for easy deployment.
 
-WebSockets: Enables real-time communication between the server and clients.
+    WebSockets: Enables real-time communication between the server and clients.
 
 
 Getting Started - 
